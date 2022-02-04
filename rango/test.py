@@ -1,16 +1,16 @@
 # 
 # Tango with Django 2 Progress Tests
 # By Leif Azzopardi and David Maxwell
-# With assistance from Enzo Roiz (https://github.com/enzoroiz)
+# With assistance from Gerardo A-C (https://github.com/gerac83) and Enzo Roiz (https://github.com/enzoroiz)
 # 
-# Chapter 5 -- Models and Databases
-# Last updated: October 3rd, 2019
+# Chapter 8 -- Working with Templates
+# Last updated: February 6th, 2020
 # Revising Author: David Maxwell
 # 
 
 #
 # In order to run these tests, copy this module to your tango_with_django_project/rango/ directory.
-# Once this is complete, run $ python manage.py test rango.tests_chapter5
+# Once this is complete, run $ python manage.py test rango.tests_chapter8
 # 
 # The tests will then be run, and the output displayed -- do you pass them all?
 # 
@@ -18,248 +18,127 @@
 #
 
 import os
-import warnings
-import importlib
+import re
+import inspect
 from rango.models import Category, Page
-from django.urls import reverse
+from populate_rango import populate
 from django.test import TestCase
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.urls import reverse, resolve
+from django.forms import fields as django_fields
 
 FAILURE_HEADER = f"{os.linesep}{os.linesep}{os.linesep}================{os.linesep}TwD TEST FAILURE =({os.linesep}================{os.linesep}"
 FAILURE_FOOTER = f"{os.linesep}"
 
 
-class Chapter5DatabaseConfigurationTests(TestCase):
+class Chapter8TemplateTests(TestCase):
     """
-    Is your database configured as the book states?
-    These tests should pass if you haven't tinkered with the database configuration.
-    N.B. Some of the configuration values we could check are overridden by the testing framework -- so we leave them.
+    I don't think it's possible to test every aspect of templates from this chapter without delving into some crazy string checking.
+    So, instead, we can do some simple tests here: check that the base template exists, and that each page in the templates/rango directory has a title block.
+    Based on the idea by Gerardo -- beautiful idea, cheers big man.
     """
-    def setUp(self):
-        pass
-    
-    def does_gitignore_include_database(self, path):
+    def get_template(self, path_to_template):
         """
-        Takes the path to a .gitignore file, and checks to see whether the db.sqlite3 database is present in that file.
+        Helper function to return the string representation of a template file.
         """
-        f = open(path, 'r')
-        
+        f = open(path_to_template, 'r')
+        template_str = ""
+
         for line in f:
-            line = line.strip()
-            
-            if line.startswith('db.sqlite3'):
-                return True
-        
+            template_str = f"{template_str}{line}"
+
         f.close()
-        return False
+        return template_str
     
-    def test_databases_variable_exists(self):
+    def test_base_template_exists(self):
         """
-        Does the DATABASES settings variable exist, and does it have a default configuration?
+        Tests whether the base template exists.
         """
-        self.assertTrue(settings.DATABASES, f"{FAILURE_HEADER}Your project's settings module does not have a DATABASES variable, which is required. Check the start of Chapter 5.{FAILURE_FOOTER}")
-        self.assertTrue('default' in settings.DATABASES, f"{FAILURE_HEADER}You do not have a 'default' database configuration in your project's DATABASES configuration variable. Check the start of Chapter 5.{FAILURE_FOOTER}")
+        template_base_path = os.path.join(settings.TEMPLATE_DIR, 'rango', 'base.html')
+        self.assertTrue(os.path.exists(template_base_path), f"{FAILURE_HEADER}We couldn't find the new base.html template that's required in the templates/rango directory. Did you create the template in the right place?{FAILURE_FOOTER}")
     
-    def test_gitignore_for_database(self):
+    def test_base_title_block(self):
         """
-        If you are using a Git repository and have set up a .gitignore, checks to see whether the database is present in that file.
+        Checks if Rango's new base template has the correct value for the base template.
         """
-        git_base_dir = os.popen('git rev-parse --show-toplevel').read().strip()
+        template_base_path = os.path.join(settings.TEMPLATE_DIR, 'rango', 'base.html')
+        template_str = self.get_template(template_base_path)
         
-        if git_base_dir.startswith('fatal'):
-            warnings.warn("You don't appear to be using a Git repository for your codebase. Although not strictly required, it's *highly recommended*. Skipping this test.")
-        else:
-            gitignore_path = os.path.join(git_base_dir, '.gitignore')
-            
-            if os.path.exists(gitignore_path):
-                self.assertTrue(self.does_gitignore_include_database(gitignore_path), f"{FAILURE_HEADER}Your .gitignore file does not include 'db.sqlite3' -- you should exclude the database binary file from all commits to your Git repository.{FAILURE_FOOTER}")
-            else:
-                warnings.warn("You don't appear to have a .gitignore file in place in your repository. We ask that you consider this! Read the Don't git push your Database paragraph in Chapter 5.")
+        title_pattern = r'<title>(\s*|\n*)Rango(\s*|\n*)-(\s*|\n*){% block title_block %}(\s*|\n*)How to Tango with Django!(\s*|\n*){% (endblock|endblock title_block) %}(\s*|\n*)</title>'
+        self.assertTrue(re.search(title_pattern, template_str), f"{FAILURE_HEADER}When searching the contents of base.html, we couldn't find the expected title block. We're looking for '<title>Rango - {{% block title_block %}}How to Tango with Django!{{% endblock %}}</title>' with any combination of whitespace.{FAILURE_FOOTER}")
+    
+    def test_template_usage(self):
+        """
+        Check that each view uses the correct template.
+        """
+        populate()
+        
+        urls = [reverse('rango:about'),
+                reverse('rango:add_category'),
+                reverse('rango:add_page', kwargs={'category_name_slug': 'python'}),
+                reverse('rango:show_category', kwargs={'category_name_slug': 'python'}),
+                reverse('rango:index'),]
 
+        templates = ['rango/about.html',
+                     'rango/add_category.html',
+                     'rango/add_page.html',
+                     'rango/category.html',
+                     'rango/index.html',]
+        
+        for url, template in zip(urls, templates):
+            response = self.client.get(url)
+            self.assertTemplateUsed(response, template)
 
-class Chapter5ModelTests(TestCase):
-    """
-    Are the models set up correctly, and do all the required attributes (post exercises) exist?
-    """
-    def setUp(self):
-        category_py = Category.objects.get_or_create(name='Python', views=123, likes=55)
-        Category.objects.get_or_create(name='Django', views=187, likes=90)
+    def test_title_blocks(self):
+        """
+        Tests whether the title blocks in each page are the expected values.
+        This is probably the easiest way to check for blocks.
+        """
+        populate()
+        template_base_path = os.path.join(settings.TEMPLATE_DIR, 'rango')
         
-        Page.objects.get_or_create(category=category_py[0],
-                                   title='Tango with Django',
-                                   url='https://www.tangowithdjango.com',
-                                   views=156)
-    
-    def test_category_model(self):
-        """
-        Runs a series of tests on the Category model.
-        Do the correct attributes exist?
-        """
-        category_py = Category.objects.get(name='Python')
-        self.assertEqual(category_py.views, 123, f"{FAILURE_HEADER}Tests on the Category model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-        self.assertEqual(category_py.likes, 55, f"{FAILURE_HEADER}Tests on the Category model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-        
-        category_dj = Category.objects.get(name='Django')
-        self.assertEqual(category_dj.views, 187, f"{FAILURE_HEADER}Tests on the Category model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-        self.assertEqual(category_dj.likes, 90, f"{FAILURE_HEADER}Tests on the Category model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-    
-    def test_page_model(self):
-        """
-        Runs some tests on the Page model.
-        Do the correct attributes exist?
-        """
-        category_py = Category.objects.get(name='Python')
-        page = Page.objects.get(title='Tango with Django')
-        self.assertEqual(page.url, 'https://www.tangowithdjango.com', f"{FAILURE_HEADER}Tests on the Page model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-        self.assertEqual(page.views, 156, f"{FAILURE_HEADER}Tests on the Page model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-        self.assertEqual(page.title, 'Tango with Django', f"{FAILURE_HEADER}Tests on the Page model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-        self.assertEqual(page.category, category_py, f"{FAILURE_HEADER}Tests on the Page model failed. Check you have all required attributes (including those specified in the exercises!), and try again.{FAILURE_FOOTER}")
-    
-    def test_str_method(self):
-        """
-        Tests to see if the correct __str__() method has been implemented for each model.
-        """
-        category_py = Category.objects.get(name='Python')
-        page = Page.objects.get(title='Tango with Django')
-        
-        self.assertEqual(str(category_py), 'Python', f"{FAILURE_HEADER}The __str__() method in the Category class has not been implemented according to the specification given in the book.{FAILURE_FOOTER}")
-        self.assertEqual(str(page), 'Tango with Django', f"{FAILURE_HEADER}The __str__() method in the Page class has not been implemented according to the specification given in the book.{FAILURE_FOOTER}")
+        mappings = {
+            reverse('rango:about'): {'full_title_pattern': r'<title>(\s*|\n*)Rango(\s*|\n*)-(\s*|\n*)About Rango(\s*|\n*)</title>',
+                                     'block_title_pattern': r'{% block title_block %}(\s*|\n*)About Rango(\s*|\n*){% (endblock|endblock title_block) %}',
+                                     'template_filename': 'about.html'},
+            reverse('rango:add_category'): {'full_title_pattern': r'<title>(\s*|\n*)Rango(\s*|\n*)-(\s*|\n*)Add a Category(\s*|\n*)</title>',
+                                            'block_title_pattern': r'{% block title_block %}(\s*|\n*)Add a Category(\s*|\n*){% (endblock|endblock title_block) %}',
+                                            'template_filename': 'add_category.html'},
+            reverse('rango:add_page', kwargs={'category_name_slug': 'python'}): {'full_title_pattern': r'<title>(\s*|\n*)Rango(\s*|\n*)-(\s*|\n*)Add a Page(\s*|\n*)</title>',
+                                                                                 'block_title_pattern': r'{% block title_block %}(\s*|\n*)Add a Page(\s*|\n*){% (endblock|endblock title_block) %}',
+                                                                                 'template_filename': 'add_page.html'},
+            reverse('rango:show_category', kwargs={'category_name_slug': 'python'}): {'full_title_pattern': r'<title>(\s*|\n*)Rango(\s*|\n*)-(\s*|\n*)Python(\s*|\n*)</title>',
+                                                                                      'block_title_pattern': r'{% block title_block %}(\s*|\n*){% if category %}(\s*|\n*){{ category.name }}(\s*|\n*){% else %}(\s*|\n*)Unknown Category(\s*|\n*){% endif %}(\s*|\n*){% (endblock|endblock title_block) %}',
+                                                                                      'template_filename': 'category.html'},
+            reverse('rango:index'): {'full_title_pattern': r'<title>(\s*|\n*)Rango(\s*|\n*)-(\s*|\n*)Homepage(\s*|\n*)</title>',
+                                     'block_title_pattern': r'{% block title_block %}(\s*|\n*)Homepage(\s*|\n*){% (endblock|endblock title_block) %}',
+                                     'template_filename': 'index.html'},
+        }
 
+        for url in mappings.keys():
+            full_title_pattern = mappings[url]['full_title_pattern']
+            template_filename = mappings[url]['template_filename']
+            block_title_pattern = mappings[url]['block_title_pattern']
 
-class Chapter5AdminInterfaceTests(TestCase):
-    """
-    A series of tests that examines the authentication functionality (for superuser creation and logging in), and admin interface changes.
-    Have all the admin interface tweaks been applied, and have the two models been added to the admin app?
-    """
-    def setUp(self):
-        """
-        Create a superuser account for use in testing.
-        Logs the superuser in, too!
-        """
-        User.objects.create_superuser('testAdmin', 'email@email.com', 'adminPassword123')
-        self.client.login(username='testAdmin', password='adminPassword123')
-        
-        category = Category.objects.get_or_create(name='TestCategory')[0]
-        Page.objects.get_or_create(title='TestPage1', url='https://www.google.com', category=category)
-    
-    def test_admin_interface_accessible(self):
-        response = self.client.get('/admin/')
-        self.assertEqual(response.status_code, 200, f"{FAILURE_HEADER}The admin interface is not accessible. Check that you didn't delete the 'admin/' URL pattern in your project's urls.py module.{FAILURE_FOOTER}")
-    
-    def test_models_present(self):
-        """
-        Checks whether the two models are present within the admin interface homepage -- and whether Rango is listed there at all.
-        """
-        response = self.client.get('/admin/')
-        response_body = response.content.decode()
-        
-        # Is the Rango app present in the admin interface's homepage?
-        self.assertTrue('Models in the Rango application' in response_body, f"{FAILURE_HEADER}The Rango app wasn't listed on the admin interface's homepage. You haven't added the models to the admin interface.{FAILURE_FOOTER}")
-        
-        # Check each model is present.
-        self.assertTrue('Categories' in response_body, f"{FAILURE_HEADER}The Category model was not found in the admin interface. If you did add the model to admin.py, did you add the correct plural spelling (Categories)?{FAILURE_FOOTER}")
-        self.assertTrue('Pages' in response_body, f"{FAILURE_HEADER}The Page model was not found in the admin interface. If you did add the model to admin.py, did you add the correct plural spelling (Pages)?{FAILURE_FOOTER}")
-    
-    def test_page_display_changes(self):
-        """
-        Checks to see whether the Page model has had the required changes applied for presentation in the admin interface.
-        """
-        response = self.client.get('/admin/rango/page/')
-        response_body = response.content.decode()
-        
-        # Headers -- are they all present?
-        self.assertTrue('<div class="text"><a href="?o=1">Title</a></div>' in response_body, f"{FAILURE_HEADER}The 'Title' column could not be found in the admin interface for the Page model -- if it is present, is it in the correct order?{FAILURE_FOOTER}")
-        self.assertTrue('<div class="text"><a href="?o=2">Category</a></div>' in response_body, f"{FAILURE_HEADER}The 'Category' column could not be found in the admin interface for the Page model -- if it is present, is it in the correct order?{FAILURE_FOOTER}")
-        self.assertTrue('<div class="text"><a href="?o=3">Url</a></div>' in response_body, f"{FAILURE_HEADER}The 'Url' (stylised that way!) column could not be found in the admin interface for the Page model -- if it is present, is it in the correct order?{FAILURE_FOOTER}")
-        
-        # Is the TestPage1 page present, and in order?
-        expected_str = '<tr class="row1"><td class="action-checkbox"><input type="checkbox" name="_selected_action" value="1" class="action-select"></td><th class="field-title"><a href="/admin/rango/page/1/change/">TestPage1</a></th><td class="field-category nowrap">TestCategory</td><td class="field-url">https://www.google.com</td></tr>'
-        self.assertTrue(expected_str in response_body, f"{FAILURE_HEADER}We couldn't find the correct output in the Page view within the admin interface for page listings. Did you complete the exercises, adding extra columns to the admin view for this model? Are the columns in the correct order?{FAILURE_FOOTER}")
+            request = self.client.get(url)
+            content = request.content.decode('utf-8')
+            template_str = self.get_template(os.path.join(template_base_path, template_filename))
 
+            self.assertTrue(re.search(full_title_pattern, content), f"{FAILURE_HEADER}When looking at the response of GET '{url}', we couldn't find the correct <title> block. Check the exercises on Chapter 8 for the expected title.{FAILURE_FOOTER}")
+            self.assertTrue(re.search(block_title_pattern, template_str), f"{FAILURE_HEADER}When looking at the source of template '{template_filename}', we couldn't find the correct template block. Are you using template inheritence correctly, and did you spell the title as in the book? Check the exercises on Chapter 8 for the expected title.{FAILURE_FOOTER}")
+    
+    def test_for_links_in_base(self):
+        """
+        There should be three hyperlinks in base.html, as per the specification of the book.
+        Check for their presence, along with correct use of URL lookups.
+        """
+        template_str = self.get_template(os.path.join(settings.TEMPLATE_DIR, 'rango', 'base.html'))
 
-class Chapter5PopulationScriptTests(TestCase):
-    """
-    Tests whether the population script puts the expected data into a test database.
-    All values that are explicitly mentioned in the book are tested.
-    Expects that the population script has the populate() function, as per the book!
-    """
-    def setUp(self):
-        """
-        Imports and runs the population script, calling the populate() method.
-        """
-        try:
-            import populate_rango
-        except ImportError:
-            raise ImportError(f"{FAILURE_HEADER}The Chapter 5 tests could not import the populate_rango. Check it's in the right location (the first tango_with_django_project directory).{FAILURE_FOOTER}")
+        look_for = [
+            '<a href="{% url \'rango:add_category\' %}">Add a New Category</a>',
+            '<a href="{% url \'rango:about\' %}">About</a>',
+            '<a href="{% url \'rango:index\' %}">Index</a>',
+        ]
         
-        if 'populate' not in dir(populate_rango):
-            raise NameError(f"{FAILURE_HEADER}The populate() function does not exist in the populate_rango module. This is required.{FAILURE_FOOTER}")
-        
-        # Call the population script -- any exceptions raised here do not have fancy error messages to help readers.
-        populate_rango.populate()
-    
-    def test_categories(self):
-        """
-        There should be three categories from populate_rango -- Python, Django and Other Frameworks.
-        """
-        categories = Category.objects.filter()
-        categories_len = len(categories)
-        categories_strs = map(str, categories)
-        
-        self.assertEqual(categories_len, 3, f"{FAILURE_HEADER}Expecting 3 categories to be created from the populate_rango module; found {categories_len}.{FAILURE_FOOTER}")
-        self.assertTrue('Python' in categories_strs, f"{FAILURE_HEADER}The category 'Python' was expected but not created by populate_rango.{FAILURE_FOOTER}")
-        self.assertTrue('Django' in categories_strs, f"{FAILURE_HEADER}The category 'Django' was expected but not created by populate_rango.{FAILURE_FOOTER}")
-        self.assertTrue('Other Frameworks' in categories_strs, f"{FAILURE_HEADER}The category 'Other Frameworks' was expected but not created by populate_rango.{FAILURE_FOOTER}")
-    
-    def test_pages(self):
-        """
-        Tests to check whether each page for the three different categories exists in the database.
-        Calls the helper check_category_pages() method for this.
-        """
-        details = {'Python':
-                       ['Official Python Tutorial', 'How to Think like a Computer Scientist', 'Learn Python in 10 Minutes'],
-                   'Django':
-                       ['Official Django Tutorial', 'Django Rocks', 'How to Tango with Django'],
-                   'Other Frameworks':
-                       ['Bottle', 'Flask']}
-        
-        for category in details:
-            page_titles = details[category]
-            self.check_category_pages(category, page_titles)
-    
-    def test_counts(self):
-        """
-        Tests whether each category's likes and views values are the values that are stated in the book.
-        Pukes when a value doesn't match.
-        """
-        details = {'Python': {'views': 128, 'likes': 64},
-                   'Django': {'views': 64, 'likes': 32},
-                   'Other Frameworks': {'views': 32, 'likes': 16}}
-        
-        for category in details:
-            values = details[category]
-            category = Category.objects.get(name=category)
-            self.assertEqual(category.views, values['views'], f"{FAILURE_HEADER}The number of views for the '{category}' category is incorrect (got {category.views}, expected {values['views']}, generated from populate_rango).{FAILURE_FOOTER}")
-            self.assertEqual(category.likes, values['likes'], f"{FAILURE_HEADER}The number of likes for the '{category}' category is incorrect (got {category.likes}, expected {values['likes']}, generated from populate_rango).{FAILURE_FOOTER}")
-    
-    def check_category_pages(self, category, page_titles):
-        """
-        Performs a number of tests on the database regarding pages for a given category.
-        Do all the included pages in the population script exist?
-        The expected page list is passed as page_titles. The name of the category is passed as category.
-        """
-        category = Category.objects.get(name=category)
-        pages = Page.objects.filter(category=category)
-        pages_len = len(pages)
-        page_titles_len = len(page_titles)
-        
-        self.assertEqual(pages_len, len(page_titles), f"{FAILURE_HEADER}Expected {page_titles_len} pages in the Python category produced by populate_rango; found {pages_len}.{FAILURE_FOOTER}")
-        
-        for title in page_titles:
-            try:
-                page = Page.objects.get(title=title)
-            except Page.DoesNotExist:
-                raise ValueError(f"{FAILURE_HEADER}The page '{title}' belonging to category '{category}' was not found in the database produced by populate_rango.{FAILURE_FOOTER}")
-            
-            self.assertEqual(page.category, category)
+        for lookup in look_for:
+            self.assertTrue(lookup in template_str, f"{FAILURE_HEADER}In base.html, we couldn't find the hyperlink '{lookup}'. Check your markup in base.html is correct and as written in the book.{FAILURE_FOOTER}")
